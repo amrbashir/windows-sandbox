@@ -1,0 +1,3 @@
+[workspace]
+members = ["sandbox", "sandbox_hooks", "shared"]
+resolver = "3"
