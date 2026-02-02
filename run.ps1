@@ -23,9 +23,9 @@ cargo build --bin sandbox_daemon32 --target i686-pc-windows-msvc
 Move-Item "$X32_DIR/sandbox_daemon32.exe" "$SANDBOX_DIR/sandbox_daemon32.exe" -Force
 
 # Run the sandbox
-# cargo run --bin sandbox -- "notepad.exe ./test/secret.txt"
 cargo run --bin sandbox -- "C:\Users\amr\scoop\apps\uutils-coreutils\current\coreutils.exe cat ./test/secret.txt"
 cargo run --bin sandbox -- "powershell.exe -Command  C:\Users\amr\scoop\apps\uutils-coreutils\current\coreutils.exe cat ./test/secret.txt"
 cargo run --bin sandbox -- "C:\Users\amr\scoop\shims\cat.exe ./test/secret.txt"
 cargo run --bin sandbox -- "powershell.exe -Command  C:\Users\amr\scoop\shims\cat.exe ./test/secret.txt"
+# cargo run --bin sandbox -- "notepad.exe ./test/secret.txt"
 # cargo run --bin sandbox -- "pwsh.exe"

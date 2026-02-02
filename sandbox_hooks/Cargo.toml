@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 shared = { path = "../shared" }
 ctor = "0.6.3"
-minhook-detours = { path = "../../minhook-detours-rs" }
+minhook-detours = { git = "https://github.com/amrbashir/minhook-detours-rs" }
 
 [dependencies.windows]
 version = "0.62.2"
