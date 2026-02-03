@@ -7,7 +7,6 @@ use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Foundation::HINSTANCE;
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Foundation::STATUS_ACCESS_DENIED;
-use windows::Win32::Foundation::UNICODE_STRING;
 use windows::Win32::Storage::FileSystem::FILE_NAME_NORMALIZED;
 use windows::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
@@ -22,17 +21,7 @@ use windows::Win32::System::Threading::{PROCESS_INFORMATION, ResumeThread, START
 use windows::core::BOOL;
 use windows::core::{s, w};
 
-#[repr(C)]
-pub struct OBJECT_ATTRIBUTES {
-    pub length: u32,
-    pub root_directory: HANDLE,
-    pub object_name: *mut UNICODE_STRING,
-    pub attributes: u32,
-    pub security_descriptor: *mut c_void,
-    pub security_quality_of_service: *mut c_void,
-}
-
-type NtReadFileFunc = extern "system" fn(
+type NTREADFILE = extern "system" fn(
     filehandle: HANDLE,
     event: HANDLE,
     apcroutine: PIO_APC_ROUTINE,
@@ -44,7 +33,7 @@ type NtReadFileFunc = extern "system" fn(
     key: *const u32,
 ) -> NTSTATUS;
 
-type CreateProcessInternalWFunc = extern "system" fn(
+type CREATEPROCESSINTERNALW = extern "system" fn(
     HANDLE,
     *const u16,
     *mut u16,
@@ -59,7 +48,7 @@ type CreateProcessInternalWFunc = extern "system" fn(
     *mut c_void,
 ) -> BOOL;
 
-static mut NtReadFileHook: NtReadFileFunc = NtReadFile_tour;
+static mut pOriginalNtReadFile: NTREADFILE = NtReadFile_tour;
 
 extern "system" fn NtReadFile_tour(
     filehandle: HANDLE,
@@ -91,7 +80,7 @@ extern "system" fn NtReadFile_tour(
 
     // Call the original NtReadFile
     let res = unsafe {
-        NtReadFileHook(
+        pOriginalNtReadFile(
             filehandle,
             event,
             apcroutine,
@@ -106,7 +95,7 @@ extern "system" fn NtReadFile_tour(
     res
 }
 
-static mut CreateProcessInternalWHook: CreateProcessInternalWFunc = CreateProcessInternalW_tour;
+static mut pOriginalCreateProcessInternalW: CREATEPROCESSINTERNALW = CreateProcessInternalW_tour;
 
 #[allow(non_snake_case)]
 extern "system" fn CreateProcessInternalW_tour(
@@ -127,7 +116,7 @@ extern "system" fn CreateProcessInternalW_tour(
 
     // Call the original CreateProcessInternalW
     let result = unsafe {
-        CreateProcessInternalWHook(
+        pOriginalCreateProcessInternalW(
             hToken,
             applicationName,
             commandLine,
@@ -169,15 +158,10 @@ extern "system" fn CreateProcessInternalW_tour(
 }
 
 macro_rules! install_hook {
-    ($h_ntdll:expr, $fn_name:literal, $hook:ident, $hook_fn:expr) => {
+    ($h_ntdll:expr, $fn_name:literal, $original:ident, $hook:expr) => {
         if let Some(target) = GetProcAddress($h_ntdll, s!($fn_name)) {
-            let mut original: *mut c_void = std::ptr::null_mut();
-            if MH_CreateHook(
-                target as *mut c_void,
-                $hook_fn as *mut c_void,
-                &mut original as *mut *mut c_void,
-            ) != MH_OK
-            {
+            let mut temp_orig: *mut c_void = std::ptr::null_mut();
+            if MH_CreateHook(target as *mut c_void, $hook as *mut c_void, &mut temp_orig) != MH_OK {
                 println!("[INIT] ERROR: Failed to create {} hook", $fn_name);
                 return;
             }
@@ -187,7 +171,7 @@ macro_rules! install_hook {
                 return;
             }
 
-            $hook = std::mem::transmute(original);
+            $original = std::mem::transmute(temp_orig);
 
             println!("[INIT] {} hook installed", $fn_name);
         } else {
@@ -221,12 +205,12 @@ fn init_hooks() {
         let h_ntdll = GetModuleHandleW(w!("ntdll.dll")).unwrap();
         let h_kernelbase = GetModuleHandleW(w!("kernelbase.dll")).unwrap();
 
-        install_hook!(h_ntdll, "NtReadFile", NtReadFileHook, NtReadFile_tour);
+        install_hook!(h_ntdll, "NtReadFile", pOriginalNtReadFile, NtReadFile_tour);
 
         install_hook!(
             h_kernelbase,
             "CreateProcessInternalW",
-            CreateProcessInternalWHook,
+            pOriginalCreateProcessInternalW,
             CreateProcessInternalW_tour
         );
     }
