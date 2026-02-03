@@ -8,6 +8,7 @@ use windows::Win32::System::Memory::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessId};
 use windows::core::BOOL;
+use windows::core::Owned;
 use windows::core::PWSTR;
 use windows::core::{s, w};
 
@@ -25,13 +26,14 @@ pub fn inject_dll(process: Process, hinstance: HINSTANCE) -> windows::core::Resu
 
     unsafe {
         let pid = GetProcessId(*process);
-        let injection_handle = OpenProcess(PROCESS_ALL_ACCESS, false, pid)?;
+        let target_process = OpenProcess(PROCESS_ALL_ACCESS, false, pid)?;
+        let target_process = Owned::new(target_process);
 
         let dll_path_wide = encode_wide(dll_path.to_str().unwrap());
         let dll_path_size = dll_path_wide.len() * std::mem::size_of::<u16>();
 
         let remote_mem = VirtualAllocEx(
-            injection_handle,
+            *target_process,
             None,
             dll_path_size,
             MEM_COMMIT | MEM_RESERVE,
@@ -41,23 +43,23 @@ pub fn inject_dll(process: Process, hinstance: HINSTANCE) -> windows::core::Resu
         if remote_mem.is_null() {
             let err = GetLastError();
             println!("[INJECT] VirtualAllocEx failed: {:?}", err);
-
-            CloseHandle(injection_handle)?;
             return Err(E_FAIL.into());
         }
 
+        // Ensure the allocated memory is freed if we exit early
+        let _guard = ScopeGuard::new(|| {
+            let _ = VirtualFreeEx(*target_process, remote_mem, 0, MEM_RELEASE);
+        });
+
         let mut bytes_written = 0;
         if let Err(e) = WriteProcessMemory(
-            injection_handle,
+            *target_process,
             remote_mem,
             dll_path_wide.as_ptr() as *const _,
             dll_path_size,
             Some(&mut bytes_written),
         ) {
             println!("[INJECT] WriteProcessMemory failed: {:?}", e);
-
-            VirtualFreeEx(injection_handle, remote_mem, 0, MEM_RELEASE)?;
-            CloseHandle(injection_handle)?;
             return Err(E_FAIL.into());
         }
 
@@ -66,7 +68,7 @@ pub fn inject_dll(process: Process, hinstance: HINSTANCE) -> windows::core::Resu
 
         if let Some(load_library) = load_library_addr {
             let h_thread = CreateRemoteThread(
-                injection_handle,
+                *target_process,
                 None,
                 0,
                 Some(std::mem::transmute(load_library)),
@@ -74,19 +76,13 @@ pub fn inject_dll(process: Process, hinstance: HINSTANCE) -> windows::core::Resu
                 0,
                 None,
             )?;
-            WaitForSingleObject(h_thread, INFINITE);
-            CloseHandle(h_thread)?;
+            let h_thread = Owned::new(h_thread);
+            WaitForSingleObject(*h_thread, INFINITE);
         } else {
             let err = GetLastError();
             println!("[INJECT] GetProcAddress(LoadLibraryW) failed: {:?}", err);
-
-            VirtualFreeEx(injection_handle, remote_mem, 0, MEM_RELEASE)?;
-            CloseHandle(injection_handle)?;
             return Err(E_FAIL.into());
         }
-
-        VirtualFreeEx(injection_handle, remote_mem, 0, MEM_RELEASE)?;
-        CloseHandle(injection_handle)?;
     }
 
     Ok(())
@@ -186,6 +182,26 @@ impl Deref for Process {
 
     fn deref(&self) -> &Self::Target {
         &self.handle
+    }
+}
+
+struct ScopeGuard<F: FnOnce()> {
+    cleanup: Option<F>,
+}
+
+impl<F: FnOnce()> ScopeGuard<F> {
+    fn new(cleanup: F) -> Self {
+        Self {
+            cleanup: Some(cleanup),
+        }
+    }
+}
+
+impl<F: FnOnce()> Drop for ScopeGuard<F> {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup();
+        }
     }
 }
 
