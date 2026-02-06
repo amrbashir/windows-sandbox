@@ -6,9 +6,9 @@ use windows::core::PWSTR;
 
 #[tokio::main]
 pub async fn main() -> windows::core::Result<()> {
-    println!("[HOST] Starting sandbox...");
+    eprintln!("[HOST] Starting sandbox...");
 
-    println!("[HOST] Creating job object...");
+    eprintln!("[HOST] Creating job object...");
     let h_job = unsafe { CreateJobObjectW(None, None)? };
 
     // Configure job limits
@@ -35,13 +35,13 @@ pub async fn main() -> windows::core::Result<()> {
 
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.len() < 1 {
-        println!("[HOST] Please provide a command to run in the sandbox.");
+        eprintln!("[HOST] Please provide a command to run in the sandbox.");
         return Ok(());
     }
 
     let mut cmd = shared::encode_wide(&args.join(" "));
 
-    println!("[HOST] Creating process...");
+    eprintln!("[HOST] Creating process...");
     unsafe {
         CreateProcessW(
             None,
@@ -56,16 +56,16 @@ pub async fn main() -> windows::core::Result<()> {
             &mut pi,
         )?;
     }
-    println!("[HOST] Process created with PID: {:?}", pi.dwProcessId);
+    eprintln!("[HOST] Process created with PID: {:?}", pi.dwProcessId);
 
-    println!("[HOST] Assigning to job object...");
+    eprintln!("[HOST] Assigning to job object...");
     unsafe { AssignProcessToJobObject(h_job, pi.hProcess)? };
 
     let process = shared::Process::from_raw_handle(pi.hProcess);
     let hinstance = unsafe { GetModuleHandleW(None)? };
     shared::inject_dll(process, HINSTANCE(hinstance.0))?;
 
-    println!("[HOST] Resuming process thread...");
+    eprintln!("[HOST] Resuming process thread...");
     unsafe { ResumeThread(pi.hThread) };
 
     // Wait for process to exit

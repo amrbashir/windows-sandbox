@@ -74,7 +74,7 @@ extern "system" fn NtReadFile_tour(
 
     // Deny access to test\secret.txt
     if file_name.ends_with(r"test\secret.txt") {
-        println!("[HOOK:NtReadFile] Denying access to {file_name}");
+        eprintln!("[HOOK:NtReadFile] Denying access to {file_name}");
         return STATUS_ACCESS_DENIED;
     }
 
@@ -112,7 +112,7 @@ extern "system" fn CreateProcessInternalW_tour(
     processInformation: *mut PROCESS_INFORMATION,
     restrictedUserToken: *mut c_void,
 ) -> BOOL {
-    println!("[HOOK:CreateProcessInternalW] intercepted");
+    eprintln!("[HOOK:CreateProcessInternalW] intercepted");
 
     // Call the original CreateProcessInternalW
     let result = unsafe {
@@ -141,9 +141,9 @@ extern "system" fn CreateProcessInternalW_tour(
         let process = shared::Process::from_raw_handle(hprocess);
         let exe_path = process.exe_path().unwrap_or_default();
 
-        println!("[HOOK:CreateProcessInternalW] Injecting hooks into child process:  {exe_path}");
+        eprintln!("[HOOK:CreateProcessInternalW] Injecting hooks into child process:  {exe_path}");
         if let Err(e) = shared::inject_dll(process, unsafe { G_HINST_DLL }) {
-            println!("[HOOK:CreateProcessInternalW] Failed to inject into child process: {e:?}");
+            eprintln!("[HOOK:CreateProcessInternalW] Failed to inject into child process: {e:?}");
             let _ = unsafe { TerminateProcess(hprocess, 1) };
             return BOOL(0);
         }
@@ -162,43 +162,43 @@ macro_rules! install_hook {
         if let Some(target) = GetProcAddress($h_ntdll, s!($fn_name)) {
             let mut temp_orig: *mut c_void = std::ptr::null_mut();
             if MH_CreateHook(target as *mut c_void, $hook as *mut c_void, &mut temp_orig) != MH_OK {
-                println!("[INIT] ERROR: Failed to create {} hook", $fn_name);
+                eprintln!("[INIT] ERROR: Failed to create {} hook", $fn_name);
                 return;
             }
 
             if MH_EnableHook(target as *mut c_void) != MH_OK {
-                println!("[INIT] ERROR: Failed to enable {} hook", $fn_name);
+                eprintln!("[INIT] ERROR: Failed to enable {} hook", $fn_name);
                 return;
             }
 
             $original = std::mem::transmute(temp_orig);
 
-            println!("[INIT] {} hook installed", $fn_name);
+            eprintln!("[INIT] {} hook installed", $fn_name);
         } else {
-            println!("[INIT] WARNING: {} not found", $fn_name);
+            eprintln!("[INIT] WARNING: {} not found", $fn_name);
         }
     };
 }
 
 fn uninit_hooks() {
-    println!("[UNINIT] Uninitializing sandbox hooks...");
+    eprintln!("[UNINIT] Uninitializing sandbox hooks...");
 
     unsafe {
         if MH_Uninitialize() != MH_OK {
-            println!("[UNINIT] WARNING: MinHook uninitialization failed");
+            eprintln!("[UNINIT] WARNING: MinHook uninitialization failed");
             return;
         }
     }
 
-    println!("[UNINIT] Sandbox hooks uninitialized successfully");
+    eprintln!("[UNINIT] Sandbox hooks uninitialized successfully");
 }
 
 fn init_hooks() {
-    println!("[INIT] Initializing sandbox hooks...");
+    eprintln!("[INIT] Initializing sandbox hooks...");
 
     unsafe {
         if MH_Initialize() != MH_OK {
-            println!("[INIT] Failed to initialize MinHook");
+            eprintln!("[INIT] Failed to initialize MinHook");
             return;
         }
 
@@ -215,7 +215,7 @@ fn init_hooks() {
         );
     }
 
-    println!("[INIT] All hooks initialized successfully");
+    eprintln!("[INIT] All hooks initialized successfully");
 }
 
 static mut G_HINST_DLL: HINSTANCE = HINSTANCE(0 as _);
