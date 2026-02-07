@@ -10,7 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 shared = { path = "../shared" }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time"] }
 
 [dependencies.windows]
 version = "0.62.2"

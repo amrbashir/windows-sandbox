@@ -9,8 +9,7 @@ use windows::Win32::System::JobObjects::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::*;
 
-#[tokio::main]
-pub async fn main() -> windows::core::Result<()> {
+fn main() -> windows::core::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.len() < 1 {
         eprintln!("[SANDBOX] Please provide a command to run in the sandbox.");
@@ -41,6 +40,8 @@ pub async fn main() -> windows::core::Result<()> {
     eprintln!("[SANDBOX] Creating process...");
     let mut child = Command::new(&args[0])
         .args(&args[1..])
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
         .creation_flags(CREATE_SUSPENDED.0)
         .spawn()?;
 
@@ -50,6 +51,7 @@ pub async fn main() -> windows::core::Result<()> {
     eprintln!("[SANDBOX] Assigning to job object...");
     unsafe { AssignProcessToJobObject(h_job, h_process)? };
 
+    eprintln!("[SANDBOX] Injecting DLL...");
     let process = shared::Process::from_raw_handle(h_process);
     let hinstance = unsafe { GetModuleHandleW(None)? };
     shared::inject_dll(process, HINSTANCE(hinstance.0))?;

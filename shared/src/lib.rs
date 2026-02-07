@@ -5,10 +5,53 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
 
+use windows::core::PWSTR;
+use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Win32::Foundation::*;
+use windows::Win32::Storage::FileSystem::{GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED};
 use windows::Win32::System::LibraryLoader::*;
 use windows::Win32::System::Threading::*;
-use windows::core::PWSTR;
+
+pub const PROTECTED_PATH: &str = r"test\secret.txt";
+
+pub fn is_protected_path(path: &str) -> bool {
+    path.ends_with(PROTECTED_PATH)
+}
+
+pub fn check_and_deny(path: &str, api_name: &str) -> bool {
+    if is_protected_path(path) {
+        eprintln!("[HOOK:{}] Denying access to {}", api_name, path);
+        return true;
+    }
+    false
+}
+
+pub fn get_path_from_handle(handle: HANDLE) -> String {
+    let mut buf = [0u16; MAX_PATH as _];
+    let result = unsafe { GetFinalPathNameByHandleW(handle, &mut buf, FILE_NAME_NORMALIZED) };
+    if result == 0 {
+        // Not a file handle or error - return empty string
+        return String::new();
+    }
+    decode_wide(&buf).to_string_lossy().into()
+}
+
+pub fn get_path_from_object_attrs(obj_attr: *mut OBJECT_ATTRIBUTES) -> String {
+    let mut buf = [0u16; MAX_PATH as _];
+    unsafe {
+        if !obj_attr.is_null() && !(*obj_attr).ObjectName.is_null() {
+            let name = &*(*obj_attr).ObjectName;
+            let len = (name.Length / 2) as usize;
+            if len > 0 && len < MAX_PATH as usize {
+                std::slice::from_raw_parts(name.Buffer.as_ptr(), len)
+                    .iter()
+                    .enumerate()
+                    .for_each(|(i, &c)| buf[i] = c);
+            }
+        }
+    }
+    decode_wide(&buf).to_string_lossy().into()
+}
 
 pub fn inject_dll(process: Process, hinstance: HINSTANCE) -> windows::core::Result<()> {
     let current_module = get_current_module_path(hinstance)?;
