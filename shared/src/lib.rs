@@ -1,4 +1,8 @@
+use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::ops::Deref;
+use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
 
 use windows::Win32::Foundation::*;
@@ -13,8 +17,8 @@ pub fn inject_dll(process: Process, hinstance: HINSTANCE) -> windows::core::Resu
     let dll_path_32 = current_module_dir.join("sandbox_hooks_32.dll");
     let dll_path_64 = current_module_dir.join("sandbox_hooks_64.dll");
 
-    let dll_path_32 = encode_wide(&dll_path_32.to_string_lossy());
-    let dll_path_64 = encode_wide(&dll_path_64.to_string_lossy());
+    let dll_path_32 = encode_wide(dll_path_32);
+    let dll_path_64 = encode_wide(dll_path_64);
 
     unsafe { dllinject::InjectDll((*process).0, dll_path_32.as_ptr(), dll_path_64.as_ptr()) };
 
@@ -91,10 +95,16 @@ impl Deref for Process {
     }
 }
 
-pub fn encode_wide(s: &str) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(s)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
+pub fn encode_wide(string: impl AsRef<OsStr>) -> Vec<u16> {
+    use std::iter::once;
+
+    string.as_ref().encode_wide().chain(once(0)).collect()
+}
+
+pub fn decode_wide(mut wide_c_string: &[u16]) -> OsString {
+    if let Some(null_pos) = wide_c_string.iter().position(|c| *c == 0) {
+        wide_c_string = &wide_c_string[..null_pos];
+    }
+
+    OsString::from_wide(wide_c_string)
 }

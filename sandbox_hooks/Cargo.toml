@@ -13,6 +13,9 @@ minhook-detours = { git = "https://github.com/amrbashir/minhook-detours-rs" }
 [dependencies.windows]
 version = "0.62.2"
 features = [
+    "Wdk",
+    "Wdk_Foundation",
+    "Win32_UI_WindowsAndMessaging",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",

@@ -3,8 +3,10 @@
 
 use minhook_detours::*;
 use std::ffi::c_void;
+use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Foundation::HINSTANCE;
+use windows::Win32::Foundation::MAX_PATH;
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Foundation::STATUS_ACCESS_DENIED;
 use windows::Win32::Storage::FileSystem::FILE_NAME_NORMALIZED;
@@ -33,6 +35,20 @@ type NTREADFILE = extern "system" fn(
     key: *const u32,
 ) -> NTSTATUS;
 
+type NTCREATEFILE = extern "system" fn(
+    filehandle: *mut HANDLE,
+    desiredaccess: u32,
+    objectattributes: *mut OBJECT_ATTRIBUTES,
+    iostatusblock: *mut IO_STATUS_BLOCK,
+    allocationsize: *const i64,
+    fileattributes: u32,
+    shareaccess: u32,
+    createDisposition: u32,
+    createoptions: u32,
+    eabuffer: *const c_void,
+    ealength: u32,
+) -> NTSTATUS;
+
 type CREATEPROCESSINTERNALW = extern "system" fn(
     HANDLE,
     *const u16,
@@ -48,6 +64,59 @@ type CREATEPROCESSINTERNALW = extern "system" fn(
     *mut c_void,
 ) -> BOOL;
 
+static mut pOriginalNtCreateFile: NTCREATEFILE = NtCreateFile_tour;
+
+extern "system" fn NtCreateFile_tour(
+    filehandle: *mut HANDLE,
+    desiredaccess: u32,
+    objectattributes: *mut OBJECT_ATTRIBUTES,
+    iostatusblock: *mut IO_STATUS_BLOCK,
+    allocationsize: *const i64,
+    fileattributes: u32,
+    shareaccess: u32,
+    createDisposition: u32,
+    createoptions: u32,
+    eabuffer: *const c_void,
+    ealength: u32,
+) -> NTSTATUS {
+    // Retrieve the file name from the object attributes
+    let mut file_name_buf = [0u16; MAX_PATH as _];
+    unsafe {
+        let object_name = (*objectattributes).ObjectName;
+        if !object_name.is_null() {
+            let len = ((*object_name).Length / 2) as usize;
+            let name_slice = std::slice::from_raw_parts((*object_name).Buffer.as_ptr(), len);
+            file_name_buf[..len].copy_from_slice(name_slice);
+        }
+    }
+
+    let file_name = shared::decode_wide(&file_name_buf);
+    let file_name = file_name.to_string_lossy();
+
+    // Deny access to test\secret.txt
+    if file_name.ends_with(r"test\secret.txt") {
+        eprintln!("[HOOK:NtCreateFile] Denying access to {file_name}");
+        return STATUS_ACCESS_DENIED;
+    }
+
+    // Call the original NtCreateFile
+    unsafe {
+        pOriginalNtCreateFile(
+            filehandle,
+            desiredaccess,
+            objectattributes,
+            iostatusblock,
+            allocationsize,
+            fileattributes,
+            shareaccess,
+            createDisposition,
+            createoptions,
+            eabuffer,
+            ealength,
+        )
+    }
+}
+
 static mut pOriginalNtReadFile: NTREADFILE = NtReadFile_tour;
 
 extern "system" fn NtReadFile_tour(
@@ -61,16 +130,11 @@ extern "system" fn NtReadFile_tour(
     byteoffset: *const i64,
     key: *const u32,
 ) -> NTSTATUS {
-    let mut file_name_buf = [0u16; 260];
+    let mut file_name_buf = [0u16; MAX_PATH as _];
     unsafe { GetFinalPathNameByHandleW(filehandle, &mut file_name_buf, FILE_NAME_NORMALIZED) };
 
-    let file_name = String::from_utf16_lossy(
-        &file_name_buf
-            .iter()
-            .take_while(|&&c| c != 0)
-            .cloned()
-            .collect::<Vec<u16>>(),
-    );
+    let file_name = shared::decode_wide(&file_name_buf);
+    let file_name = file_name.to_string_lossy();
 
     // Deny access to test\secret.txt
     if file_name.ends_with(r"test\secret.txt") {
@@ -79,7 +143,7 @@ extern "system" fn NtReadFile_tour(
     }
 
     // Call the original NtReadFile
-    let res = unsafe {
+    unsafe {
         pOriginalNtReadFile(
             filehandle,
             event,
@@ -91,8 +155,7 @@ extern "system" fn NtReadFile_tour(
             byteoffset,
             key,
         )
-    };
-    res
+    }
 }
 
 static mut pOriginalCreateProcessInternalW: CREATEPROCESSINTERNALW = CreateProcessInternalW_tour;
@@ -185,6 +248,12 @@ fn init_hooks() {
         let h_kernelbase = GetModuleHandleW(w!("kernelbase.dll")).unwrap();
 
         install_hook!(h_ntdll, "NtReadFile", pOriginalNtReadFile, NtReadFile_tour);
+        install_hook!(
+            h_ntdll,
+            "NtCreateFile",
+            pOriginalNtCreateFile,
+            NtCreateFile_tour
+        );
 
         install_hook!(
             h_kernelbase,
