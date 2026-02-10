@@ -1,6 +1,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
 
+use anyhow::{Context, Result};
 use minhook_detours::*;
 use std::ffi::c_void;
 use std::path::PathBuf;
@@ -633,11 +634,11 @@ macro_rules! install_hook {
         if let Some(target) = GetProcAddress($h_module, s!($fn_name)) {
             let mut temp_orig: *mut c_void = std::ptr::null_mut();
             if MH_CreateHook(target as *mut c_void, $hook as *mut c_void, &mut temp_orig) != MH_OK {
-                return;
+                return Err(anyhow::anyhow!("Failed to create hook for {}", $fn_name));
             }
 
             if MH_EnableHook(target as *mut c_void) != MH_OK {
-                return;
+                return Err(anyhow::anyhow!("Failed to enable hook for {}", $fn_name));
             }
 
             $original = std::mem::transmute(temp_orig);
@@ -645,15 +646,16 @@ macro_rules! install_hook {
     };
 }
 
-fn init_hooks() {
+fn init_hooks() -> Result<()> {
     unsafe {
         if MH_Initialize() != MH_OK {
-            eprintln!("[INIT] Failed to initialize MinHook");
-            return;
+            anyhow::bail!("Failed to initialize MinHook");
         }
 
-        let h_ntdll = GetModuleHandleW(w!("ntdll.dll")).unwrap();
-        let h_kernelbase = GetModuleHandleW(w!("kernelbase.dll")).unwrap();
+        let h_ntdll =
+            GetModuleHandleW(w!("ntdll.dll")).context("Failed to get ntdll.dll handle")?;
+        let h_kernelbase = GetModuleHandleW(w!("kernelbase.dll"))
+            .context("Failed to get kernelbase.dll handle")?;
 
         // --- Process Creation ---
         install_hook!(
@@ -751,6 +753,8 @@ fn init_hooks() {
             NtDeleteFile_tour
         );
     }
+
+    Ok(())
 }
 
 // ============================================================================
@@ -766,7 +770,9 @@ extern "system" fn DllMain(hinstDLL: HINSTANCE, fdw_reason: u32, _lpv_reserved: 
         DLL_PROCESS_ATTACH => {
             unsafe { G_HINST_DLL = hinstDLL };
             shared::init_deny_config();
-            init_hooks();
+            if let Err(e) = init_hooks() {
+                eprintln!("[HOOK] Failed to initialize hooks: {e}");
+            }
         }
         DLL_PROCESS_DETACH => {
             let _ = unsafe { MH_Uninitialize() };

@@ -1,11 +1,11 @@
 #![feature(windows_process_extensions_main_thread_handle)]
 
+use anyhow::Result;
+use clap::Parser;
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::{ChildExt, CommandExt};
 use std::path::PathBuf;
 use std::process::Command;
-
-use clap::Parser;
 use windows::Win32::Foundation::*;
 use windows::Win32::System::JobObjects::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -25,7 +25,7 @@ struct Args {
     command: Vec<String>,
 }
 
-fn main() -> windows::core::Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse();
 
     if args.command.is_empty() {

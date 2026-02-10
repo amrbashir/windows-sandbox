@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStrExt;
@@ -19,50 +20,29 @@ pub struct DenyConfig {
     pub paths: Vec<String>,
 }
 
-// Static cache for deny config - initialized on first use, not during DllMain
 static DENY_CONFIG: OnceLock<DenyConfig> = OnceLock::new();
 
 pub fn init_deny_config() {
-    let Ok(config) = load_deny_config() else {
+    let Ok(config) = read_deny_config() else {
         return;
     };
 
     let _ = DENY_CONFIG.set(config);
 }
 
-/// Get the denied paths from the deny config (for propagating to child processes)
-/// Returns empty slice if config not loaded (fail-open behavior)
 pub fn get_denied_paths() -> &'static [String] {
-    match DENY_CONFIG.get() {
-        Some(config) => &config.paths,
-        None => {
-            // Config not loaded - return empty slice (fail-open)
-            &[]
-        }
-    }
+    &DENY_CONFIG
+        .get()
+        .expect("Deny config not initialized, call init_deny_config() first")
+        .paths
 }
 
 pub fn is_path_denied(path: &str) -> bool {
     let deny = get_denied_paths();
-
-    // Ignore empty paths
-    if path.is_empty() {
-        return false;
-    }
-
-    // Check for exact match against denied paths
-    // Note: We don't canonicalize here because this function is called from file hooks,
-    // and canonicalize would trigger file operations, causing infinite recursion.
-    // The deny paths should already be canonicalized when the config is loaded.
-    deny.iter().any(|denied| {
-        if denied.is_empty() {
-            return false;
-        }
-        path.ends_with(denied) || denied.ends_with(path)
-    })
+    deny.iter().any(|denied| denied == path)
 }
 
-pub fn create_deny_config(pid: u32, paths: &[PathBuf]) -> windows::core::Result<HANDLE> {
+pub fn create_deny_config(pid: u32, paths: &[PathBuf]) -> Result<HANDLE> {
     // Convert PathBuf slice to String vector for serialization
     let config = DenyConfig {
         paths: paths
@@ -72,12 +52,7 @@ pub fn create_deny_config(pid: u32, paths: &[PathBuf]) -> windows::core::Result<
     };
 
     // Serialize data
-    let bytes = wincode::serialize(&config).map_err(|e| {
-        windows::core::Error::new(
-            windows::core::HRESULT(E_FAIL.0),
-            format!("Failed to serialize deny config: {e}"),
-        )
-    })?;
+    let bytes = wincode::serialize(&config).context("Failed to serialize deny config")?;
 
     let data_bytes = bytes.len();
     let total_size = 8 + data_bytes; // 8 bytes for length prefix + data
@@ -99,10 +74,7 @@ pub fn create_deny_config(pid: u32, paths: &[PathBuf]) -> windows::core::Result<
     let view = unsafe { MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, 0) };
     if view.Value.is_null() {
         unsafe { CloseHandle(mapping).ok() };
-        return Err(windows::core::Error::new(
-            windows::core::HRESULT(E_FAIL.0),
-            "Failed to map view of file",
-        ));
+        anyhow::bail!("Failed to map view of file");
     }
 
     unsafe {
@@ -121,7 +93,7 @@ pub fn create_deny_config(pid: u32, paths: &[PathBuf]) -> windows::core::Result<
     Ok(mapping)
 }
 
-fn load_deny_config() -> windows::core::Result<DenyConfig> {
+fn read_deny_config() -> Result<DenyConfig> {
     // Open the shared memory mapping for this process's PID
     let name = encode_wide(format!("{SANDBOX_MMF_PREFIX}_{}", std::process::id()));
     let mapping = unsafe { OpenFileMappingW(FILE_MAP_READ.0, false, PCWSTR(name.as_ptr()))? };
@@ -130,10 +102,7 @@ fn load_deny_config() -> windows::core::Result<DenyConfig> {
     let view = unsafe { MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0) };
     if view.Value.is_null() {
         unsafe { CloseHandle(mapping).ok() };
-        return Err(windows::core::Error::new(
-            windows::core::HRESULT(E_FAIL.0),
-            "Failed to map view of file",
-        ));
+        anyhow::bail!("Failed to map view of file");
     }
 
     unsafe {
@@ -149,12 +118,7 @@ fn load_deny_config() -> windows::core::Result<DenyConfig> {
         let data_slice = std::slice::from_raw_parts(data_ptr, data_len);
 
         // Deserialize config
-        let deny = wincode::deserialize(data_slice).map_err(|_e| {
-            windows::core::Error::new(
-                windows::core::HRESULT(E_FAIL.0),
-                "Failed to deserialize deny config",
-            )
-        })?;
+        let deny = wincode::deserialize(data_slice).context("Failed to deserialize deny config")?;
 
         let _ = UnmapViewOfFile(view);
         let _ = CloseHandle(mapping);
@@ -163,9 +127,11 @@ fn load_deny_config() -> windows::core::Result<DenyConfig> {
     }
 }
 
-pub fn inject_dll(hprocess: HANDLE, hinstance: HINSTANCE) -> windows::core::Result<()> {
+pub fn inject_dll(hprocess: HANDLE, hinstance: HINSTANCE) -> Result<()> {
     let current_module = get_current_module_path(hinstance)?;
-    let current_module_dir = current_module.parent().unwrap();
+    let current_module_dir = current_module
+        .parent()
+        .context("Failed to get parent directory of current module")?;
 
     let dll_path_32 = current_module_dir.join("sandbox_hooks_32.dll");
     let dll_path_64 = current_module_dir.join("sandbox_hooks_64.dll");
@@ -176,24 +142,18 @@ pub fn inject_dll(hprocess: HANDLE, hinstance: HINSTANCE) -> windows::core::Resu
     let result =
         unsafe { dllinject::InjectDll(hprocess.0, dll_path_32.as_ptr(), dll_path_64.as_ptr()) };
     if result != 0 {
-        return Err(windows::core::Error::new(
-            windows::core::HRESULT(result as _),
-            format!("DLL injection failed with error code: {result}"),
-        ));
+        anyhow::bail!("DLL injection failed with error code: {result}");
     }
 
     Ok(())
 }
 
-fn get_current_module_path(hinstance: HINSTANCE) -> windows::core::Result<PathBuf> {
+fn get_current_module_path(hinstance: HINSTANCE) -> Result<PathBuf> {
     let mut buf = vec![0u16; MAX_PATH as usize];
 
     let result = unsafe { GetModuleFileNameW(Some(HMODULE(hinstance.0)), &mut buf) };
     if result == 0 {
-        return Err(windows::core::Error::new(
-            windows::core::HRESULT(E_FAIL.0),
-            "Failed to get module file name",
-        ));
+        anyhow::bail!("Failed to get module file name");
     }
 
     let path = String::from_utf16_lossy(&buf);
