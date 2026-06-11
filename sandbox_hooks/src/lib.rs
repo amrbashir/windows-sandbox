@@ -27,34 +27,34 @@ static mut G_HINST_DLL: HINSTANCE = HINSTANCE(0 as _);
 /// DllMain is the entry point for the DLL.
 #[unsafe(no_mangle)]
 extern "system" fn DllMain(hinst_dll: HINSTANCE, fdw_reason: u32, _lpv_reserved: *mut ()) -> bool {
-    if fdw_reason == DLL_PROCESS_ATTACH {
-        // Store the DLL instance handle
-        unsafe { G_HINST_DLL = hinst_dll };
+	if fdw_reason == DLL_PROCESS_ATTACH {
+		// Store the DLL instance handle
+		unsafe { G_HINST_DLL = hinst_dll };
 
-        shared::init_deny_config();
+		shared::init_deny_config();
 
-        if let Err(e) = unsafe { init_hooks() } {
-            eprintln!("[HOOK] Failed to initialize hooks: {e}");
-        }
-    };
+		if let Err(e) = unsafe { init_hooks() } {
+			eprintln!("[HOOK] Failed to initialize hooks: {e}");
+		}
+	};
 
-    true
+	true
 }
 
 unsafe fn init_hooks() -> Result<()> {
-    // Get modules needed for hooking
-    let hntdll = GetModuleHandleW(w!("ntdll.dll")).context("ntdll.dll not found")?;
-    let hkernelbase = GetModuleHandleW(w!("kernelbase.dll")).context("kernelbase.dll not found")?;
+	// Get modules needed for hooking
+	let hntdll = GetModuleHandleW(w!("ntdll.dll")).context("ntdll.dll not found")?;
+	let hkernelbase = GetModuleHandleW(w!("kernelbase.dll")).context("kernelbase.dll not found")?;
 
-    // Initialize MinHook
-    if MH_Initialize() != MH_OK {
-        anyhow::bail!("Failed to initialize MinHook");
-    }
+	// Initialize MinHook
+	if MH_Initialize() != MH_OK {
+		anyhow::bail!("Failed to initialize MinHook");
+	}
 
-    register_createprocessinternalw(hkernelbase)?;
-    register_ntreadfile(hntdll)?;
+	register_createprocessinternalw(hkernelbase)?;
+	register_ntreadfile(hntdll)?;
 
-    Ok(())
+	Ok(())
 }
 
 /// Define a hook with the given signature and body, and automatically call the original function at
@@ -141,87 +141,87 @@ macro_rules! define_hook {
 }
 
 crate::define_hook! {
-    unsafe extern "system" fn CreateProcessInternalW(
-        hToken: HANDLE,
-        applicationName: *const u16,
-        commandLine: *mut u16,
-        processAttributes: *mut c_void,
-        threadAttributes: *mut c_void,
-        inheritHandles: BOOL,
-        creationFlags: u32,
-        environment: *mut c_void,
-        currentDirectory: *const u16,
-        startupInfo: *mut STARTUPINFOW,
-        processInformation: *mut PROCESS_INFORMATION,
-        restrictedUserToken: *mut c_void,
-    ) -> BOOL {
-        let result = unsafe {
-            pOriginalCreateProcessInternalW(
-                hToken,
-                applicationName,
-                commandLine,
-                processAttributes,
-                threadAttributes,
-                inheritHandles,
-                creationFlags | CREATE_SUSPENDED.0,
-                environment,
-                currentDirectory,
-                startupInfo,
-                processInformation,
-                restrictedUserToken,
-            )
-        };
+	unsafe extern "system" fn CreateProcessInternalW(
+		hToken: HANDLE,
+		applicationName: *const u16,
+		commandLine: *mut u16,
+		processAttributes: *mut c_void,
+		threadAttributes: *mut c_void,
+		inheritHandles: BOOL,
+		creationFlags: u32,
+		environment: *mut c_void,
+		currentDirectory: *const u16,
+		startupInfo: *mut STARTUPINFOW,
+		processInformation: *mut PROCESS_INFORMATION,
+		restrictedUserToken: *mut c_void,
+	) -> BOOL {
+		let result = unsafe {
+			pOriginalCreateProcessInternalW(
+				hToken,
+				applicationName,
+				commandLine,
+				processAttributes,
+				threadAttributes,
+				inheritHandles,
+				creationFlags | CREATE_SUSPENDED.0,
+				environment,
+				currentDirectory,
+				startupInfo,
+				processInformation,
+				restrictedUserToken,
+			)
+		};
 
-        if result.as_bool() && !processInformation.is_null() {
-            let pi = unsafe { &*processInformation };
-            let hprocess = pi.hProcess;
-            let hthread = pi.hThread;
+		if result.as_bool() && !processInformation.is_null() {
+			let pi = unsafe { &*processInformation };
+			let hprocess = pi.hProcess;
+			let hthread = pi.hThread;
 
-            // Propagate deny config to child process BEFORE injection
-            let deny = shared::get_denied_paths();
-            let deny = deny.iter().map(PathBuf::from).collect::<Vec<_>>();
+			// Propagate deny config to child process BEFORE injection
+			let deny = shared::get_denied_paths();
+			let deny = deny.iter().map(PathBuf::from).collect::<Vec<_>>();
 
-            let child_id = unsafe { GetProcessId(hprocess) };
-            if let Err(e) = shared::create_deny_config(child_id, &deny) {
-                eprintln!(
-                    "[HOOK:CreateProcessInternalW] Failed to create deny config for child: {e:?}"
-                );
-                let _ = unsafe { TerminateProcess(hprocess, 1) };
-                return BOOL(0);
-            }
+			let child_id = unsafe { GetProcessId(hprocess) };
+			if let Err(e) = shared::create_deny_config(child_id, &deny) {
+				eprintln!(
+					"[HOOK:CreateProcessInternalW] Failed to create deny config for child: {e:?}"
+				);
+				let _ = unsafe { TerminateProcess(hprocess, 1) };
+				return BOOL(0);
+			}
 
-            if let Err(e) = shared::inject_dll(hprocess, unsafe { G_HINST_DLL }) {
-                eprintln!("[HOOK:CreateProcessInternalW] Failed to inject into child process: {e:?}");
-                eprintln!("[HOOK:CreateProcessInternalW] Terminating child process...");
-                let _ = unsafe { TerminateProcess(hprocess, 1) };
-                return BOOL(0);
-            }
+			if let Err(e) = shared::inject_dll(hprocess, unsafe { G_HINST_DLL }) {
+				eprintln!("[HOOK:CreateProcessInternalW] Failed to inject into child process: {e:?}");
+				eprintln!("[HOOK:CreateProcessInternalW] Terminating child process...");
+				let _ = unsafe { TerminateProcess(hprocess, 1) };
+				return BOOL(0);
+			}
 
-            if creationFlags & CREATE_SUSPENDED.0 == 0 {
-                unsafe { ResumeThread(hthread) };
-            }
-        }
+			if creationFlags & CREATE_SUSPENDED.0 == 0 {
+				unsafe { ResumeThread(hthread) };
+			}
+		}
 
-        result
-    }
+		result
+	}
 }
 
 crate::define_auto_hook! {
-    unsafe extern "system" fn NtReadFile(
-        filehandle: HANDLE,
-        event: HANDLE,
-        apcroutine: PIO_APC_ROUTINE,
-        apccontext: *const c_void,
-        iostatusblock: *mut IO_STATUS_BLOCK,
-        buffer: *mut c_void,
-        length: u32,
-        byteoffset: *const i64,
-        key: *const u32,
-    ) -> NTSTATUS {
-        let path = shared::get_path_from_handle(filehandle);
-        if shared::is_path_denied(&path) {
-            eprintln!("[HOOK:NtReadFile] Denying access to {}", path);
-            return STATUS_ACCESS_DENIED;
-        }
-    }
+	unsafe extern "system" fn NtReadFile(
+		filehandle: HANDLE,
+		event: HANDLE,
+		apcroutine: PIO_APC_ROUTINE,
+		apccontext: *const c_void,
+		iostatusblock: *mut IO_STATUS_BLOCK,
+		buffer: *mut c_void,
+		length: u32,
+		byteoffset: *const i64,
+		key: *const u32,
+	) -> NTSTATUS {
+		let path = shared::get_path_from_handle(filehandle);
+		if shared::is_path_denied(&path) {
+			eprintln!("[HOOK:NtReadFile] Denying access to {}", path);
+			return STATUS_ACCESS_DENIED;
+		}
+	}
 }
